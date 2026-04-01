@@ -106,10 +106,17 @@ export class CityAgent {
     this.tintedSheet = _tintCache.get(this.role)!;
   }
 
-  pickTarget(w: number, h: number) {
-    const margin = 80;
-    this.targetX = margin + Math.random() * (w - margin * 2);
-    this.targetY = margin + Math.random() * (h - margin * 2);
+  /** Pick a random road tile to walk to. Falls back to random position. */
+  pickRoadTarget(roadTiles: { tx: number; ty: number }[]) {
+    if (roadTiles.length === 0) return;
+    const t = roadTiles[Math.floor(Math.random() * roadTiles.length)];
+    this.targetX = t.tx * 16 + 8;
+    this.targetY = t.ty * 16 + 8;
+  }
+
+  /** Legacy fallback. */
+  pickTarget(_w: number, _h: number) {
+    // no-op — use pickRoadTarget instead
   }
 
   /** Move to a specific tile position (center of tile). */

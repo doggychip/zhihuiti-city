@@ -1,21 +1,30 @@
 import { CityAgent } from "./agent";
-import { fetchAgents, fetchStats, type StatsData } from "./api";
+import { fetchAgents, fetchStats } from "./api";
 import { loadAllSprites, TILE, type SpriteAssets } from "./sprites";
-import { generateWorld } from "./worldgen";
-import { render, updateHUD, setAssets, setWorld, setEconomy } from "./render";
+import { generateWorld, type WorldMap } from "./worldgen";
+import { render, updateHUD, setAssets, setWorld, setEconomy, setHovered, setSelected, ZOOM } from "./render";
 import { startThoughtLoop } from "./think";
 import { CityEconomy, preferredBuilding, BUILDING_COST } from "./economy";
 
 const canvas = document.getElementById("city") as HTMLCanvasElement;
 const ctx = canvas.getContext("2d")!;
+const tooltip = document.getElementById("tooltip") as HTMLDivElement;
 
 let W = 0;
 let H = 0;
 let agents: CityAgent[] = [];
-let stats: StatsData | null = null;
+// Stats just triggers HUD refresh on load
 let sprites: SpriteAssets | null = null;
+let worldMap: WorldMap | null = null;
 const econ = new CityEconomy();
 setEconomy(econ);
+
+/** Pre-computed list of road tile pixel centers for agent pathfinding. */
+let roadTiles: { tx: number; ty: number }[] = [];
+
+/** Day counter — increments every 60s of real time. */
+let dayTimer = 0;
+let dayCount = 1;
 
 function resize() {
   W = window.innerWidth;
@@ -26,20 +35,84 @@ function resize() {
   canvas.style.height = H + "px";
   ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
 
-  const world = generateWorld(W, H);
-  setWorld(world);
-  econ.setWorld(world);
+  worldMap = generateWorld(W, H);
+  setWorld(worldMap);
+  econ.setWorld(worldMap);
+
+  // Build road tile list from worldMap.roadSet
+  roadTiles = [];
+  for (const key of worldMap.roadSet) {
+    const [tx, ty] = key.split(",").map(Number);
+    roadTiles.push({ tx, ty });
+  }
 }
 
 window.addEventListener("resize", resize);
 resize();
 
+// ── Hover / click ──
+
+canvas.addEventListener("mousemove", (e) => {
+  // Convert screen coords to world coords (accounting for zoom)
+  const wx = e.clientX / ZOOM;
+  const wy = e.clientY / ZOOM;
+
+  let closest: CityAgent | null = null;
+  let closestDist = 20; // hit radius in world pixels
+  for (const a of agents) {
+    const d = Math.hypot(a.x - wx, a.y - wy);
+    if (d < closestDist) { closestDist = d; closest = a; }
+  }
+
+  setHovered(closest);
+
+  if (closest) {
+    tooltip.style.display = "block";
+    tooltip.style.left = (e.clientX + 12) + "px";
+    tooltip.style.top = (e.clientY - 8) + "px";
+    tooltip.innerHTML = `<b>${closest.role}</b> ${closest.emoji}<br>`
+      + `ID: ${closest.id.slice(0, 8)}<br>`
+      + `Budget: $${Math.round(closest.budget)}<br>`
+      + `Score: ${closest.score.toFixed(2)}<br>`
+      + `${closest.dormant ? "💤 Dormant" : closest.goal.type}`;
+    canvas.style.cursor = "pointer";
+  } else {
+    tooltip.style.display = "none";
+    canvas.style.cursor = "default";
+  }
+});
+
+canvas.addEventListener("mouseleave", () => {
+  tooltip.style.display = "none";
+  setHovered(null);
+});
+
+canvas.addEventListener("click", (e) => {
+  const wx = e.clientX / ZOOM;
+  const wy = e.clientY / ZOOM;
+  let closest: CityAgent | null = null;
+  let closestDist = 20;
+  for (const a of agents) {
+    const d = Math.hypot(a.x - wx, a.y - wy);
+    if (d < closestDist) { closestDist = d; closest = a; }
+  }
+  setSelected(closest);
+});
+
+// ── Agent loading ──
+
 async function loadAgents() {
   try {
     const data = await fetchAgents();
     agents = data.map((d) => new CityAgent(d, W, H));
+    // Place agents on road tiles
     for (const a of agents) {
-      a.pickTarget(W, H);
+      if (roadTiles.length > 0) {
+        const rt = roadTiles[Math.floor(Math.random() * roadTiles.length)];
+        a.x = rt.tx * TILE + 8;
+        a.y = rt.ty * TILE + 8;
+      }
+      a.pickRoadTarget(roadTiles);
       if (sprites) a.initSprite(sprites);
     }
   } catch (e) {
@@ -49,50 +122,53 @@ async function loadAgents() {
 
 async function loadStats() {
   try {
-    stats = await fetchStats();
-    updateHUD(stats, econ);
+    await fetchStats();
+    refreshHUD();
   } catch (e) {
     console.error("Failed to load stats:", e);
   }
 }
 
+function refreshHUD() {
+  const alive = agents.filter(a => a.alive && !a.dormant).length;
+  updateHUD(dayCount, alive, econ.buildings.length, econ);
+}
+
 // ── Economy simulation ──
 
-/** Timers for periodic economy actions (in seconds). */
-let buildTimer = 3;   // first build attempt after 3s
+let buildTimer = 3;
 let earnTimer = 0;
-
-const BUILD_INTERVAL = 4;   // agents try to build every 4s
-const EARN_INTERVAL = 2;    // earning tick every 2s
+const BUILD_INTERVAL = 4;
+const EARN_INTERVAL = 2;
 
 function economyTick(dt: number) {
-  // ── Build phase ──
   buildTimer -= dt;
   if (buildTimer <= 0) {
     buildTimer = BUILD_INTERVAL;
     runBuildPhase();
   }
 
-  // ── Earn phase ──
   earnTimer -= dt;
   if (earnTimer <= 0) {
     earnTimer = EARN_INTERVAL;
     econ.earnTick(agents);
 
-    // Circuit breaker check
     for (const a of agents) {
       if (!a.dormant && a.alive && a.budget <= 0) {
         a.goDormant();
-        a.showThought("😤 预算归零！进入休眠...");
+        a.showThought("💤 预算归零...");
         const s = econ.agentStats.get(a.id);
         if (s) s.timesDormant++;
         else econ.agentStats.set(a.id, { buildingsBuilt: 0, totalEarned: 0, timesDormant: 1 });
       }
     }
 
-    // Refresh HUD
-    updateHUD(stats, econ);
+    refreshHUD();
   }
+
+  // Day counter
+  dayTimer += dt;
+  if (dayTimer >= 60) { dayTimer -= 60; dayCount++; refreshHUD(); }
 }
 
 function runBuildPhase() {
@@ -103,7 +179,6 @@ function runBuildPhase() {
     const cost = BUILDING_COST[pref];
 
     if (a.budget >= cost) {
-      // Try to build
       const site = econ.findBuildSite(a);
       if (site) {
         a.goal = { type: "build", tx: site.tx, ty: site.ty };
@@ -111,63 +186,32 @@ function runBuildPhase() {
         econ.submitBuildIntent(a, site.tx, site.ty, pref);
       }
     } else {
-      // Not enough budget — go earn near a building
-      const nearestBuilding = findNearestBuilding(a);
-      if (nearestBuilding) {
-        a.goal = { type: "earn", tx: nearestBuilding.tx, ty: nearestBuilding.ty };
-        a.moveToTile(nearestBuilding.tx, nearestBuilding.ty);
+      // Go earn near a building
+      if (econ.buildings.length > 0) {
+        const b = econ.buildings[Math.floor(Math.random() * econ.buildings.length)];
+        a.goal = { type: "earn", tx: b.tx, ty: b.ty };
+        a.moveToTile(b.tx, b.ty);
       } else {
         a.goal = { type: "wander" };
-        a.pickTarget(W, H);
+        a.pickRoadTarget(roadTiles);
       }
     }
   }
 
-  // Resolve competitions
   const result = econ.resolveBuildIntents(agents);
 
-  // Winners: trigger build animation
   for (const id of result.built) {
     const a = agents.find(ag => ag.id === id);
-    if (a) {
-      a.buildAnim = 1;
-      a.goal = { type: "wander" };
-    }
+    if (a) { a.buildAnim = 1; a.goal = { type: "wander" }; }
   }
-
-  // Losers: angry thought + redirect
   for (const id of result.rejected) {
     const a = agents.find(ag => ag.id === id);
     if (a) {
-      a.showThought("😤 被抢了！换个地方...");
+      a.showThought("😤 被抢了！");
       a.goal = { type: "wander" };
-      a.pickTarget(W, H);
+      a.pickRoadTarget(roadTiles);
     }
   }
-}
-
-function findNearestBuilding(a: CityAgent): { tx: number; ty: number } | null {
-  const atx = Math.floor(a.x / TILE);
-  const aty = Math.floor(a.y / TILE);
-
-  let best: { tx: number; ty: number } | null = null;
-  let bestDist = Infinity;
-
-  // Check both economy buildings and worldgen houses
-  for (const b of econ.buildings) {
-    const dx = b.tx - atx;
-    const dy = b.ty - aty;
-    const d = dx * dx + dy * dy;
-    if (d < bestDist) { bestDist = d; best = { tx: b.tx, ty: b.ty }; }
-  }
-
-  // Also worldgen decorations that are houses
-  if (econ.buildings.length === 0) {
-    // Early game: wander toward center
-    return { tx: Math.floor(W / TILE / 2), ty: Math.floor(H / TILE / 2) };
-  }
-
-  return best;
 }
 
 // ── Game loop ──
@@ -178,21 +222,16 @@ function frame(now: number) {
   const dt = Math.min((now - lastTime) / 1000, 0.1);
   lastTime = now;
 
-  // Update agents
   for (const a of agents) {
     const arrived = a.update(dt);
     if (arrived && !a.dormant) {
-      // If they arrived at a build/earn target, let economy handle it next tick.
-      // Otherwise wander again.
       if (a.goal.type === "wander") {
-        a.pickTarget(W, H);
+        a.pickRoadTarget(roadTiles);
       }
     }
   }
 
-  // Economy simulation
   economyTick(dt);
-
   render(ctx, W, H, agents, dt);
   requestAnimationFrame(frame);
 }
@@ -215,7 +254,6 @@ async function init() {
 
   startThoughtLoop(() => agents, 4000);
   requestAnimationFrame(frame);
-
   setInterval(loadStats, 30000);
 }
 

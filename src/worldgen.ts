@@ -1,8 +1,6 @@
 /**
- * Procedural world generation — builds a tile map with grass, water edges,
- * buildings, fences, trees, and decorations.
- *
- * All coordinates are in tile units (16x16 px per tile).
+ * World generation — proper city grid with roads, zones, and decorations.
+ * Roads form a grid. Buildings go next to roads. Trees fill empty grass.
  */
 
 import { TILE } from "./sprites";
@@ -12,26 +10,31 @@ export const TileType = {
   GRASS_VAR1: 1,
   GRASS_VAR2: 2,
   WATER: 3,
-  WATER_EDGE: 4,
   PATH: 5,
 } as const;
 export type TileType = (typeof TileType)[keyof typeof TileType];
 
+export type DecoType =
+  | "tree_green" | "tree_pink" | "bush" | "rock" | "flower"
+  | "mushroom" | "pumpkin" | "fence_h" | "fence_v" | "house" | "plant";
+
 export interface Decoration {
-  type: "tree_green" | "tree_pink" | "bush" | "rock" | "flower" | "mushroom" |
-        "pumpkin" | "fence_h" | "fence_v" | "house" | "chest" | "plant";
-  tx: number;   // tile x
-  ty: number;   // tile y
+  type: DecoType;
+  tx: number;
+  ty: number;
 }
 
 export interface WorldMap {
   cols: number;
   rows: number;
-  tiles: TileType[][];       // [row][col]
+  tiles: TileType[][];
   decorations: Decoration[];
+  /** All road tile coords as "tx,ty" for fast lookup. */
+  roadSet: Set<string>;
+  /** Grass tiles adjacent to a road — valid build sites. */
+  roadAdjacentGrass: { tx: number; ty: number }[];
 }
 
-/** Seed a simple pseudo-RNG from a number. */
 function mulberry32(a: number) {
   return function () {
     a |= 0; a = a + 0x6D2B79F5 | 0;
@@ -41,125 +44,137 @@ function mulberry32(a: number) {
   };
 }
 
-export function generateWorld(canvasW: number, canvasH: number): WorldMap {
-  const cols = Math.ceil(canvasW / TILE);
-  const rows = Math.ceil(canvasH / TILE);
+/**
+ * Generate a world sized in WORLD tiles (not screen pixels).
+ * The canvas will render at 2x zoom, so we only need half the tiles.
+ */
+export function generateWorld(viewW: number, viewH: number): WorldMap {
+  // World is sized to fill the viewport at 2x zoom
+  const cols = Math.ceil(viewW / (TILE * 2)) + 2;
+  const rows = Math.ceil(viewH / (TILE * 2)) + 2;
   const rand = mulberry32(42);
 
-  // Initialize all grass
+  // 1. Fill with grass
   const tiles: TileType[][] = [];
   for (let r = 0; r < rows; r++) {
     tiles[r] = [];
     for (let c = 0; c < cols; c++) {
       const v = rand();
-      if (v < 0.08) tiles[r][c] = TileType.GRASS_VAR1;
-      else if (v < 0.14) tiles[r][c] = TileType.GRASS_VAR2;
-      else tiles[r][c] = TileType.GRASS;
+      tiles[r][c] = v < 0.06 ? TileType.GRASS_VAR1
+                  : v < 0.12 ? TileType.GRASS_VAR2
+                  : TileType.GRASS;
     }
   }
 
-  // Water border (3 tiles wide)
-  const waterW = 3;
+  // 2. Water border (2 tiles)
+  const W = 2;
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      if (r < waterW || r >= rows - waterW || c < waterW || c >= cols - waterW) {
+      if (r < W || r >= rows - W || c < W || c >= cols - W) {
         tiles[r][c] = TileType.WATER;
       }
-      // edge tiles (just inside the water)
-      if (
-        (r === waterW || r === rows - waterW - 1 ||
-         c === waterW || c === cols - waterW - 1) &&
-        r >= waterW && r < rows - waterW &&
-        c >= waterW && c < cols - waterW
-      ) {
-        tiles[r][c] = TileType.GRASS; // keep as grass, we'll draw edge overlay
+    }
+  }
+
+  // 3. Road grid — horizontal every 8 rows, vertical every 10 cols
+  //    Roads are 2 tiles wide for a nice look.
+  const roadSet = new Set<string>();
+  const hRoads: number[] = [];
+  const vRoads: number[] = [];
+
+  for (let r = W + 4; r < rows - W - 2; r += 8) {
+    hRoads.push(r);
+    for (let c = W; c < cols - W; c++) {
+      tiles[r][c] = TileType.PATH;
+      tiles[r + 1][c] = TileType.PATH;
+      roadSet.add(`${c},${r}`);
+      roadSet.add(`${c},${r + 1}`);
+    }
+  }
+  for (let c = W + 5; c < cols - W - 2; c += 10) {
+    vRoads.push(c);
+    for (let r = W; r < rows - W; r++) {
+      tiles[r][c] = TileType.PATH;
+      tiles[r][c + 1] = TileType.PATH;
+      roadSet.add(`${c},${r}`);
+      roadSet.add(`${c + 1},${r}`);
+    }
+  }
+
+  // 4. Find all grass tiles adjacent to a road (build lots)
+  const roadAdjacentGrass: { tx: number; ty: number }[] = [];
+  const buildableSet = new Set<string>();
+  for (let r = W + 1; r < rows - W - 1; r++) {
+    for (let c = W + 1; c < cols - W - 1; c++) {
+      if (roadSet.has(`${c},${r}`)) continue;
+      const t = tiles[r][c];
+      if (t !== TileType.GRASS && t !== TileType.GRASS_VAR1 && t !== TileType.GRASS_VAR2) continue;
+      // Check if any neighbor is road
+      const adj = [`${c-1},${r}`, `${c+1},${r}`, `${c},${r-1}`, `${c},${r+1}`];
+      if (adj.some(k => roadSet.has(k))) {
+        roadAdjacentGrass.push({ tx: c, ty: r });
+        buildableSet.add(`${c},${r}`);
       }
     }
   }
 
-  // Paths — a few horizontal and vertical paths through the village
-  const midR = Math.floor(rows / 2);
-  const midC = Math.floor(cols / 2);
-  for (let c = waterW + 2; c < cols - waterW - 2; c++) {
-    tiles[midR][c] = TileType.PATH;
-    tiles[midR + 1][c] = TileType.PATH;
-  }
-  for (let r = waterW + 2; r < rows - waterW - 2; r++) {
-    tiles[r][midC] = TileType.PATH;
-    tiles[r][midC + 1] = TileType.PATH;
-  }
-
-  // Decorations
+  // 5. Decorations — pre-place worldgen houses along roads, trees on grass
   const decorations: Decoration[] = [];
+  const occupied = new Set<string>();
 
-  // Houses — place a few around the map
-  const housePositions = [
-    [waterW + 4, waterW + 5],
-    [waterW + 4, midC + 8],
-    [midR + 5, waterW + 5],
-    [midR + 5, cols - waterW - 12],
-    [waterW + 4, cols - waterW - 12],
-    [rows - waterW - 10, midC + 8],
-  ];
-  for (const [tr, tc] of housePositions) {
-    if (tr > 0 && tr < rows - 6 && tc > 0 && tc < cols - 8) {
-      decorations.push({ type: "house", tx: tc, ty: tr });
+  // Place worldgen houses at intersections and along main roads
+  if (hRoads.length > 0 && vRoads.length > 0) {
+    // Houses near first few intersections
+    for (const hr of hRoads) {
+      for (const vc of vRoads) {
+        // Place house 2 tiles above the road, offset from intersection
+        const spots = [
+          { tx: vc + 3, ty: hr - 2 },
+          { tx: vc - 2, ty: hr + 3 },
+          { tx: vc + 3, ty: hr + 3 },
+          { tx: vc - 2, ty: hr - 2 },
+        ];
+        for (const s of spots) {
+          if (rand() > 0.4) continue;
+          if (s.tx < W + 1 || s.ty < W + 1 || s.tx >= cols - W - 2 || s.ty >= rows - W - 2) continue;
+          if (roadSet.has(`${s.tx},${s.ty}`)) continue;
+          if (occupied.has(`${s.tx},${s.ty}`)) continue;
+          decorations.push({ type: "house", tx: s.tx, ty: s.ty });
+          // Block 3x2 area
+          for (let dy = 0; dy < 2; dy++)
+            for (let dx = 0; dx < 3; dx++)
+              occupied.add(`${s.tx + dx},${s.ty + dy}`);
+        }
+      }
     }
   }
 
-  // Fences along paths
-  for (let c = waterW + 2; c < cols - waterW - 2; c += 3) {
-    if (tiles[midR - 1]?.[c] !== TileType.PATH) {
-      decorations.push({ type: "fence_h", tx: c, ty: midR - 1 });
-    }
-    if (tiles[midR + 2]?.[c] !== TileType.PATH) {
-      decorations.push({ type: "fence_h", tx: c, ty: midR + 2 });
-    }
-  }
-
-  // Trees scattered on grass areas
-  for (let r = waterW + 1; r < rows - waterW - 2; r += 4) {
-    for (let c = waterW + 1; c < cols - waterW - 2; c += 5) {
-      // skip if near paths or houses
-      if (Math.abs(r - midR) < 4 && c > waterW + 3) continue;
-      if (Math.abs(c - midC) < 4) continue;
+  // Trees on non-road, non-adjacent grass
+  for (let r = W + 1; r < rows - W - 2; r += 3) {
+    for (let c = W + 1; c < cols - W - 2; c += 3) {
+      if (roadSet.has(`${c},${r}`) || buildableSet.has(`${c},${r}`)) continue;
+      if (occupied.has(`${c},${r}`)) continue;
+      const t = tiles[r][c];
+      if (t === TileType.WATER || t === TileType.PATH) continue;
 
       const v = rand();
-      if (v < 0.3) {
+      if (v < 0.25) {
         decorations.push({ type: "tree_green", tx: c, ty: r });
-      } else if (v < 0.45) {
+        occupied.add(`${c},${r}`);
+        occupied.add(`${c + 1},${r}`);
+      } else if (v < 0.35) {
         decorations.push({ type: "tree_pink", tx: c, ty: r });
+        occupied.add(`${c},${r}`);
+        occupied.add(`${c + 1},${r}`);
+      } else if (v < 0.42) {
+        decorations.push({ type: "flower", tx: c, ty: r });
+      } else if (v < 0.47) {
+        decorations.push({ type: "rock", tx: c, ty: r });
+      } else if (v < 0.50) {
+        decorations.push({ type: "bush", tx: c, ty: r });
       }
     }
   }
 
-  // Small decorations (flowers, rocks, mushrooms, pumpkins)
-  for (let r = waterW + 1; r < rows - waterW - 1; r += 3) {
-    for (let c = waterW + 1; c < cols - waterW - 1; c += 4) {
-      if (tiles[r][c] !== TileType.GRASS && tiles[r][c] !== TileType.GRASS_VAR1) continue;
-      if (Math.abs(r - midR) < 3 || Math.abs(c - midC) < 3) continue;
-
-      const v = rand();
-      if (v < 0.12) decorations.push({ type: "flower", tx: c, ty: r });
-      else if (v < 0.18) decorations.push({ type: "rock", tx: c, ty: r });
-      else if (v < 0.22) decorations.push({ type: "mushroom", tx: c, ty: r });
-      else if (v < 0.25) decorations.push({ type: "pumpkin", tx: c, ty: r });
-      else if (v < 0.30) decorations.push({ type: "bush", tx: c, ty: r });
-    }
-  }
-
-  // Plants near houses
-  for (const h of housePositions) {
-    const [tr, tc] = h;
-    if (tr < 0 || tr >= rows - 6 || tc < 0 || tc >= cols - 8) continue;
-    for (let i = 0; i < 3; i++) {
-      const px = tc + 7 + Math.floor(rand() * 3);
-      const py = tr + Math.floor(rand() * 4);
-      if (px < cols - waterW - 1 && py < rows - waterW - 1) {
-        decorations.push({ type: "plant", tx: px, ty: py });
-      }
-    }
-  }
-
-  return { cols, rows, tiles, decorations };
+  return { cols, rows, tiles, decorations, roadSet, roadAdjacentGrass };
 }

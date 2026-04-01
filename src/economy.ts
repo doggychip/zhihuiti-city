@@ -120,31 +120,26 @@ export class CityEconomy {
     return this.agentStats.get(id)!;
   }
 
-  /** Find a buildable grass tile near the agent's pixel position. */
+  /** Find a buildable road-adjacent grass tile. Prefers nearby. */
   findBuildSite(agent: CityAgent): { tx: number; ty: number } | null {
     if (!this.world) return null;
 
-    const cx = Math.floor(agent.x / TILE);
-    const cy = Math.floor(agent.y / TILE);
+    // Use the pre-computed road-adjacent grass list
+    const candidates = this.world.roadAdjacentGrass.filter(
+      s => this.isBuildable(s.tx, s.ty)
+    );
+    if (candidates.length === 0) return null;
 
-    // Search in expanding rings up to radius 8
-    for (let r = 1; r <= 8; r++) {
-      const candidates: { tx: number; ty: number }[] = [];
-      for (let dy = -r; dy <= r; dy++) {
-        for (let dx = -r; dx <= r; dx++) {
-          if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue; // ring only
-          const tx = cx + dx;
-          const ty = cy + dy;
-          if (this.isBuildable(tx, ty)) {
-            candidates.push({ tx, ty });
-          }
-        }
-      }
-      if (candidates.length > 0) {
-        return candidates[Math.floor(Math.random() * candidates.length)];
-      }
-    }
-    return null;
+    // Pick one of the 8 nearest to the agent
+    const ax = Math.floor(agent.x / TILE);
+    const ay = Math.floor(agent.y / TILE);
+    candidates.sort((a, b) => {
+      const da = Math.abs(a.tx - ax) + Math.abs(a.ty - ay);
+      const db = Math.abs(b.tx - ax) + Math.abs(b.ty - ay);
+      return da - db;
+    });
+    const pool = candidates.slice(0, 8);
+    return pool[Math.floor(Math.random() * pool.length)];
   }
 
   private isBuildable(tx: number, ty: number): boolean {
