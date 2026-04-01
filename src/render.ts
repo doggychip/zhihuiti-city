@@ -6,7 +6,7 @@ import type { SpriteAssets } from "./sprites";
 import { TILE } from "./sprites";
 import type { WorldMap, Decoration } from "./worldgen";
 import { TileType } from "./worldgen";
-import type { CityEconomy, PlacedBuilding } from "./economy";
+import type { CityEconomy } from "./economy";
 import { BUILDING_EMOJI } from "./economy";
 
 let assets: SpriteAssets | null = null;

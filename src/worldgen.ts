@@ -7,14 +7,15 @@
 
 import { TILE } from "./sprites";
 
-export const enum TileType {
-  GRASS = 0,
-  GRASS_VAR1 = 1,   // flower grass
-  GRASS_VAR2 = 2,   // dark grass
-  WATER = 3,
-  WATER_EDGE = 4,
-  PATH = 5,
-}
+export const TileType = {
+  GRASS: 0,
+  GRASS_VAR1: 1,
+  GRASS_VAR2: 2,
+  WATER: 3,
+  WATER_EDGE: 4,
+  PATH: 5,
+} as const;
+export type TileType = (typeof TileType)[keyof typeof TileType];
 
 export interface Decoration {
   type: "tree_green" | "tree_pink" | "bush" | "rock" | "flower" | "mushroom" |
