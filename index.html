@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>zhihuiti city</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #5a8f29; }
+      canvas { display: block; image-rendering: pixelated; image-rendering: crisp-edges; }
+      #hud {
+        position: fixed; top: 12px; left: 12px;
+        color: #3b2f1e; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px;
+        pointer-events: none; z-index: 10; line-height: 1.5;
+        background: rgba(255, 248, 230, 0.88);
+        border: 2px solid rgba(139, 119, 80, 0.5);
+        border-radius: 6px;
+        padding: 10px 14px;
+        min-width: 200px;
+      }
+      #hud .label { color: #8b7750; }
+      #hud .val { color: #3b5f0a; font-weight: bold; }
+      #hud .title {
+        font-size: 14px; color: #2d5016; margin-bottom: 4px;
+        letter-spacing: 2px; font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="hud"></div>
+    <canvas id="city"></canvas>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
