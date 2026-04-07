@@ -164,7 +164,41 @@ function drawAgent(ctx: CanvasRenderingContext2D, a: CityAgent) {
     ctx.fill();
   }
 
+  // Aura pulse for high fitness
+  if (a.fitness > 0.8) {
+    const pulse = Math.abs(Math.sin(a.auraProgress * Math.PI));
+    const r = 10 + pulse * 6;
+    const grad = ctx.createRadialGradient(a.x, a.y + 4, 2, a.x, a.y + 4, r);
+    grad.addColorStop(0, "rgba(255, 255, 255, 0.6)");
+    grad.addColorStop(1, "rgba(255, 255, 255, 0)");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(a.x, a.y + 4, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   // Dormant: semi-transparent
+  if (a.purging) {
+    // Vortex / Ash effect
+    const age = (performance.now() % 1000) / 1000;
+    ctx.globalAlpha = 1 - age;
+    ctx.save();
+    ctx.translate(a.x, a.y);
+    ctx.rotate(age * Math.PI * 4);
+    ctx.scale(1 - age, 1 - age);
+    ctx.drawImage(a.tintedSheet, src.sx, src.sy, src.sw, src.sh, -src.sw / 2, -src.sh / 2, src.sw, src.sh);
+    ctx.restore();
+    ctx.globalAlpha = 1;
+    return;
+  }
+
+  // Kady Bridge Icon
+  if (a.kadyState) {
+    ctx.font = "10px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("🌉", a.x, a.y - src.sh / 2 - 12);
+  }
+
   if (a.dormant) ctx.globalAlpha = 0.35;
   else if (!a.alive) ctx.globalAlpha = 0.4;
 
@@ -340,6 +374,16 @@ export function updateHUD(dayCount: number, agentCount: number, buildingCount: n
         html += `<div class="hud-row"><span class="hud-label">${medals[i]} ${lb[i].id.slice(0, 6)}</span>`
               + `<span class="hud-val">${lb[i].stats.buildingsBuilt} built</span></div>`;
       }
+    }
+  }
+
+  // Triple Evolution HUD
+  if (econ && econ.funds.length > 0) {
+    html += `<div class="hud-divider"></div>`;
+    html += `<div class="hud-subtitle">Community Funds</div>`;
+    for (const f of econ.funds.slice(0, 2)) {
+      const progress = Math.round((f.current / f.goal) * 100);
+      html += `<div class="hud-row"><span class="hud-label">Park @ ${f.tx},${f.ty}</span><span class="hud-val">${progress}%</span></div>`;
     }
   }
 

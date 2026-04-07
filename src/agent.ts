@@ -12,6 +12,12 @@ export const ROLE_COLORS: Record<string, string> = {
   coordinator: "#42a5f5",
   auditor: "#78909c",
   causal_reasoner: "#ec407a",
+  mutualist: "#fdd835",
+  darwinian: "#f44336",
+  hybrid: "#8e24aa",
+  critic: "#ffeb3b",
+  cold_logic: "#00bcd4",
+  warm_soul: "#ff5722",
   custom: "#9e9e9e",
 };
 
@@ -24,6 +30,12 @@ const ROLE_EMOJI: Record<string, string> = {
   coordinator: "🔗",
   auditor: "🔍",
   causal_reasoner: "🧠",
+  mutualist: "🤝",
+  darwinian: "🐺",
+  hybrid: "🧬",
+  critic: "🎬",
+  cold_logic: "🤖",
+  warm_soul: "❤️",
   custom: "⚙️",
 };
 
@@ -76,9 +88,25 @@ export class CityAgent {
   // visual state
   thought: ThoughtBubble | null = null;
   buildAnim: number = 0; // 0-1 progress of build animation (0=none)
+  fitness: number = 0; // Relative role fitness (0-1)
+  auraProgress: number = 0; // Visual aura pulse
+
+  // Triple Evolution: Finance & Lineage
+  debt: number = 0;
+  parentIds: string[] = [];
+  purging: boolean = false; // Trigger "vortex/ash" effect
+  kadyState: boolean = false; // Interacting with Kady Bridge
+
+  // Evolutionary Integrity Properties
+  truthfulness: number = 1.0; // 0.0 to 1.0
+  reflectionState: boolean = false;
+  recentThoughts: string[] = [];
+
+  // Hybrid behavioral state
+  hybridState: "cooperative" | "competitive" = "cooperative";
 
   constructor(
-    data: { id: string; role: string; avg_score: number; alive: number; budget: number },
+    data: { id: string; role: string; avg_score: number; alive: number; budget: number; parentIds?: string[] },
     canvasW: number,
     canvasH: number,
   ) {
@@ -87,6 +115,7 @@ export class CityAgent {
     this.alive = data.alive === 1;
     this.score = data.avg_score;
     this.budget = data.budget;
+    this.parentIds = data.parentIds ?? [];
     this.color = ROLE_COLORS[data.role] ?? "#9e9e9e";
     this.emoji = ROLE_EMOJI[data.role] ?? "⚙️";
 
@@ -126,6 +155,13 @@ export class CityAgent {
   }
 
   update(dt: number): boolean {
+    // Reflection — must generate corrective intent
+    if (this.reflectionState) {
+      this.moving = false;
+      this._fadeThought();
+      return false;
+    }
+
     // Dormant — count down, don't move
     if (this.dormant) {
       this.dormantTimer -= dt;
@@ -173,6 +209,18 @@ export class CityAgent {
     this.y += (dy / dist) * step;
 
     this._fadeThought();
+
+    // Pulse / Aura update (for high fitness)
+    this.auraProgress = (this.auraProgress + dt) % 2.0; // 2s cycle
+
+    // Hybrid role logic
+    if (this.role === "hybrid") {
+      // Switch between cooperative and competitive based on random noise or local stats (simplified for now)
+      if (Math.random() < 0.05 * dt) {
+        this.hybridState = this.hybridState === "cooperative" ? "competitive" : "cooperative";
+      }
+    }
+
     return false;
   }
 
@@ -202,11 +250,23 @@ export class CityAgent {
     this.thought = { text, alpha: 1, createdAt: performance.now() };
   }
 
+  /** Enter reflection state (Circuit Breaker). */
+  enterReflection() {
+    this.reflectionState = true;
+    this.dormant = false; // instead of dormant
+    this.moving = false;
+    this.goal = { type: "dormant" };
+  }
+
+  /** Exit reflection state. */
+  exitReflection() {
+    this.reflectionState = false;
+    this.budget = 10;
+    this.goal = { type: "wander" };
+  }
+
   /** Enter dormant state (circuit breaker). */
   goDormant() {
-    this.dormant = true;
-    this.dormantTimer = 30;
-    this.goal = { type: "dormant" };
-    this.moving = false;
+    this.enterReflection();
   }
 }

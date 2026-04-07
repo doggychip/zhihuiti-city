@@ -19,6 +19,23 @@ export interface PlacedBuilding {
   ty: number;         // tile y
   ownerId: string;    // agent who built it
   buildTime: number;  // performance.now() when placed
+  isCommunityProject?: boolean;
+}
+
+export interface StakingInfo {
+  lockedBudget: number;
+  lockUntil: number;
+  multiplier: number;
+}
+
+export interface CommunityFund {
+  id: string;
+  type: BuildingType;
+  tx: number;
+  ty: number;
+  goal: number;
+  current: number;
+  contributors: string[];
 }
 
 export const BUILDING_COST: Record<BuildingType, number> = {
@@ -48,6 +65,9 @@ const ROLE_PREFERRED: Record<string, BuildingType> = {
   coordinator: "house",
   auditor: "tower",
   causal_reasoner: "park",
+  mutualist: "park",
+  darwinian: "tower",
+  hybrid: "market",
   custom: "house",
 };
 
@@ -84,6 +104,11 @@ export class CityEconomy {
 
   /** Tiles blocked by worldgen decorations or paths. */
   private _blocked = new Set<string>();
+
+  // Triple Evolution: Finance & Lineage
+  staking = new Map<string, StakingInfo>();
+  funds: CommunityFund[] = [];
+  futures = new Map<string, { tx: number, ty: number, bid: number, agentId: string }>();
 
   private world: WorldMap | null = null;
 
@@ -152,13 +177,63 @@ export class CityEconomy {
     return tile === TileType.GRASS || tile === TileType.GRASS_VAR1 || tile === TileType.GRASS_VAR2;
   }
 
-  /** Agent declares intent to build at a tile this tick. */
   submitBuildIntent(agent: CityAgent, tx: number, ty: number, type: BuildingType) {
+    let budget = agent.budget;
+    // Leveraged budget for Darwinian agents (debt)
+    if (agent.role === "darwinian") {
+      const leverage = 20; // Darwinian agents can borrow up to 20 budget
+      budget += leverage;
+      agent.debt += leverage;
+    }
     this._intents.push({
       agentId: agent.id,
       tx, ty, type,
-      budget: agent.budget,
+      budget,
     });
+  }
+
+  /** Agent stakes budget for influence. */
+  stakeBudget(agent: CityAgent, amount: number, durationTicks: number) {
+    if (agent.budget < amount) return;
+    agent.budget -= amount;
+    this.staking.set(agent.id, {
+      lockedBudget: amount,
+      lockUntil: performance.now() + durationTicks * 1000, // mock ticks
+      multiplier: 1 + (amount / 100)
+    });
+  }
+
+  /** Mutualists create/contribute to community funds. */
+  contributeToFund(agent: CityAgent, tx: number, ty: number, type: BuildingType, amount: number) {
+    let fund = this.funds.find(f => f.tx === tx && f.ty === ty);
+    if (!fund) {
+      fund = {
+        id: `fund_${tx}_${ty}`,
+        type, tx, ty,
+        goal: BUILDING_COST[type],
+        current: 0,
+        contributors: []
+      };
+      this.funds.push(fund);
+    }
+    const contribution = Math.min(amount, agent.budget);
+    agent.budget -= contribution;
+    fund.current += contribution;
+    if (!fund.contributors.includes(agent.id)) fund.contributors.push(agent.id);
+
+    if (fund.current >= fund.goal) {
+      // Build community project
+      this.buildings.push({
+        type: fund.type,
+        tx: fund.tx,
+        ty: fund.ty,
+        ownerId: "community",
+        buildTime: performance.now(),
+        isCommunityProject: true
+      });
+      this._occupied.add(`${fund.tx},${fund.ty}`);
+      this.funds = this.funds.filter(f => f.id !== fund!.id);
+    }
   }
 
   /**
@@ -219,22 +294,116 @@ export class CityEconomy {
     return { built, rejected };
   }
 
+  /** Role-specific fitness (average budget of alive agents in that role). */
+  roleFitness = new Map<string, number>();
+
   /** Earning tick: agents near buildings earn budget. */
   earnTick(agents: CityAgent[]) {
+    // 1. Update Global Fitness Bridge
+    const fitnessSum = new Map<string, number>();
+    const fitnessCount = new Map<string, number>();
+    for (const a of agents) {
+      if (!a.alive) continue;
+      fitnessSum.set(a.role, (fitnessSum.get(a.role) ?? 0) + a.budget);
+      fitnessCount.set(a.role, (fitnessCount.get(a.role) ?? 0) + 1);
+    }
+    for (const [role, sum] of fitnessSum) {
+      this.roleFitness.set(role, sum / (fitnessCount.get(role) || 1));
+    }
+
+    // Lineage Tracking & Purge
+    const lineages = new Map<string, CityAgent[]>();
+    for (const a of agents) {
+      if (!a.alive) continue;
+      const rootId = a.parentIds.length > 0 ? a.parentIds[0] : a.id;
+      if (!lineages.has(rootId)) lineages.set(rootId, []);
+      lineages.get(rootId)!.push(a);
+    }
+
+    for (const [rootId, members] of lineages) {
+      const avgTruth = members.reduce((sum, m) => sum + m.truthfulness, 0) / members.length;
+      if (avgTruth < 0.3 && members.length > 3) {
+        // Trigger "Bloodline Purge" (诛七族)
+        for (const m of members) {
+          m.alive = false;
+          m.purging = true; // Visual vortex effect handled by renderer
+          this.agentStats.delete(m.id);
+        }
+      }
+    }
+
+    // 2. Symmetric Matching & Role Bonuses
     for (const agent of agents) {
-      if (agent.dormant || !agent.alive) continue;
+      if (agent.dormant || !agent.alive || agent.reflectionState) continue;
 
       const atx = Math.floor(agent.x / TILE);
       const aty = Math.floor(agent.y / TILE);
       const pref = preferredBuilding(agent.role);
 
       let earned = 0;
-      for (const b of this.buildings) {
+      const nearbyBuildings = this.buildings.filter(b => {
         const dx = Math.abs(b.tx - atx);
         const dy = Math.abs(b.ty - aty);
-        if (dx <= 3 && dy <= 3) {
-          earned += (b.type === pref) ? 3 : 1;
+        return dx <= 3 && dy <= 3;
+      });
+
+      const uniqueTypes = new Set(nearbyBuildings.map(b => b.type));
+      const othersBuildings = nearbyBuildings.filter(b => b.ownerId !== agent.id);
+
+      // Multiplier from staking
+      const multiplier = this.staking.get(agent.id)?.multiplier ?? 1.0;
+
+      // Base earnings
+      for (const b of nearbyBuildings) {
+        earned += (b.type === pref) ? (3 * multiplier) : (1 * multiplier);
+      }
+
+      // Information Entropy Penalty (Novelty Check)
+      // Check if last thought was a repeat of any previous thoughts
+      if (agent.recentThoughts.length > 1) {
+          const lastThought = agent.recentThoughts[agent.recentThoughts.length - 1];
+          const isRepeat = agent.recentThoughts.slice(0, -1).some(t => t === lastThought);
+          if (isRepeat) {
+              earned *= 0.5; // reduced by 50%
+          }
+      }
+
+      // Symmetric Matching / Role Logic
+      if (agent.role === "mutualist") {
+        // Collaboration bonus: +2 for every building owned by someone else nearby
+        earned += othersBuildings.length * 2;
+        // Community fund contribution (mutualist logic)
+        if (agent.budget > 10) {
+          const site = this.findBuildSite(agent);
+          if (site) {
+            this.contributeToFund(agent, site.tx, site.ty, "park", 5);
+          }
         }
+      } else if (agent.role === "darwinian") {
+        // Dominance bonus: +5 if they own the most buildings in this 7x7 area
+        const myCount = nearbyBuildings.filter(b => b.ownerId === agent.id).length;
+        if (myCount > 0 && myCount >= (nearbyBuildings.length - myCount)) {
+          earned += 5;
+        }
+        // Competition tax: -1 for every competing building
+        earned -= othersBuildings.length;
+        // Darwinian leveraged budget logic (futures bid logic)
+        if (agent.budget > 5) {
+          const site = this.findBuildSite(agent);
+          if (site) {
+            this.futures.set(`${site.tx},${site.ty}`, { tx: site.tx, ty: site.ty, bid: agent.budget + agent.debt, agentId: agent.id });
+          }
+        }
+      } else if (agent.role === "hybrid") {
+        // Adaptation bonus: scales with diversity of nearby buildings
+        earned += uniqueTypes.size * 2;
+      }
+
+      // Debt repayment for Darwinian agents
+      if (agent.debt > 0) {
+        const repay = Math.min(earned * 0.2, agent.debt);
+        agent.debt -= repay;
+        earned -= repay;
       }
 
       if (earned > 0) {

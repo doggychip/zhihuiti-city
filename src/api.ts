@@ -20,7 +20,16 @@ export interface StatsData {
 export async function fetchAgents(): Promise<AgentData[]> {
   const r = await fetch(`${BASE}/api/agents`);
   const d = await r.json();
-  return d.agents;
+  
+  // 🧪 Mock: Inject evolutionary roles for testing
+  const evoRoles = ["mutualist", "darwinian", "hybrid", "critic", "cold_logic", "warm_soul"];
+  return d.agents.map((a: AgentData) => {
+    if (a.role === "custom" || (a.role === "strategist" && Math.random() > 0.5)) {
+      const idx = Math.floor(Math.random() * evoRoles.length);
+      return { ...a, role: evoRoles[idx] };
+    }
+    return a;
+  });
 }
 
 export async function fetchStats(): Promise<StatsData> {

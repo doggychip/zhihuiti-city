@@ -163,8 +163,15 @@ function economyTick(dt: number) {
       }
     }
 
-    refreshHUD();
+  // update agents with fitness info for visual effects
+  for (const a of agents) {
+    const roleFit = econ.roleFitness.get(a.role) ?? 0;
+    // Normalize fitness (simple heuristic: 100 budget = 1.0 fitness)
+    a.fitness = Math.min(1, roleFit / 100);
   }
+
+  refreshHUD();
+}
 
   // Day counter
   dayTimer += dt;
@@ -252,7 +259,7 @@ async function init() {
     for (const a of agents) a.initSprite(sprites);
   }
 
-  startThoughtLoop(() => agents, 4000);
+  startThoughtLoop(() => agents, econ, 4000);
   requestAnimationFrame(frame);
   setInterval(loadStats, 30000);
 }
